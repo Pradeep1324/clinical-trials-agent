@@ -40,51 +40,51 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
         # Prepare data for export
         data = []
         for study in results:
-    protocol = study.get("protocolSection", {})
-    id_module = protocol.get("identificationModule", {})
-    status_module = protocol.get("statusModule", {})
-    sponsor_module = protocol.get("sponsorCollaboratorsModule", {})
-    design_module = protocol.get("designModule", {})
-    contact_module = protocol.get("contactsLocationsModule", {})
+            protocol = study.get("protocolSection", {})
+            id_module = protocol.get("identificationModule", {})
+            status_module = protocol.get("statusModule", {})
+            sponsor_module = protocol.get("sponsorCollaboratorsModule", {})
+            design_module = protocol.get("designModule", {})
+            contact_module = protocol.get("contactsLocationsModule", {})
 
-    nct_id = id_module.get("nctId", "N/A")
-    title = id_module.get("briefTitle", "N/A")
-    study_type = design_module.get("studyType", "N/A")
-    sponsor = sponsor_module.get("leadSponsor", {}).get("name", "N/A")
-    phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
-    status = status_module.get("overallStatus", "N/A")
+            nct_id = id_module.get("nctId", "N/A")
+            title = id_module.get("briefTitle", "N/A")
+            study_type = design_module.get("studyType", "N/A")
+            sponsor = sponsor_module.get("leadSponsor", {}).get("name", "N/A")
+            phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
+            status = status_module.get("overallStatus", "N/A")
 
-    # Dates (try structured first, then fallback to posted date text)
-    def get_date(struct):
-        return struct.get("actual", struct.get("estimated", "-")) if struct else "-"
+            # Dates (try structured first, then fallback to posted date text)
+            def get_date(struct):
+                return struct.get("actual", struct.get("estimated", "-")) if struct else "-"
 
-    start_date = get_date(status_module.get("startDateStruct", {}))
-    completion_date = get_date(status_module.get("completionDateStruct", {}))
-    primary_completion_date = get_date(status_module.get("primaryCompletionDateStruct", {}))
+            start_date = get_date(status_module.get("startDateStruct", {}))
+            completion_date = get_date(status_module.get("completionDateStruct", {}))
+            primary_completion_date = get_date(status_module.get("primaryCompletionDateStruct", {}))
 
-    # Contact Information - fetch all contacts if available
-    contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
-    contact_details = []
-    for contact in contacts:
-        name = contact.get("name", "-")
-        phone = contact.get("phone", "-")
-        email = contact.get("email", "-")
-        contact_details.append(f"Name: {name}, Phone: {phone}, Email: {email}")
-    contact_summary = " | ".join(contact_details) if contact_details else "-"
+            # Contact Information - fetch all contacts if available
+            contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
+            contact_details = []
+            for contact in contacts:
+                name = contact.get("name", "-")
+                phone = contact.get("phone", "-")
+                email = contact.get("email", "-")
+                contact_details.append(f"Name: {name}, Phone: {phone}, Email: {email}")
+            contact_summary = " | ".join(contact_details) if contact_details else "-"
 
-    # Append data
-    data.append({
-        "NCT ID": nct_id,
-        "Study Type": study_type,
-        "Title": title,
-        "Sponsor": sponsor,
-        "Phase": phase,
-        "Status": status,
-        "Study Start": start_date,
-        "Study Completion": completion_date,
-        "Primary Completion": primary_completion_date,
-        "Contacts": contact_summary
-    })
+            # Append data
+            data.append({
+                "NCT ID": nct_id,
+                "Study Type": study_type,
+                "Title": title,
+                "Sponsor": sponsor,
+                "Phase": phase,
+                "Status": status,
+                "Study Start": start_date,
+                "Study Completion": completion_date,
+                "Primary Completion": primary_completion_date,
+                "Contacts": contact_summary
+            })
 
         df = pd.DataFrame(data)
 
@@ -102,4 +102,3 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
         st.warning("No studies found. Please try a different term.")
 else:
     st.info("Please enter a condition/disease to begin search.")
-
