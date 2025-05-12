@@ -1,6 +1,20 @@
 import streamlit as st
 import requests
 
+# ✅ ADD THIS FUNCTION AT THE VERY TOP
+API_URL = "https://clinicaltrials.gov/api/v2/studies"
+
+def search_clinical_trials(query, max_results=10):
+    params = {
+        "query.term": query,
+        "pageSize": max_results
+    }
+    response = requests.get(API_URL, params=params)
+    if response.status_code == 200:
+        return response.json().get("studies", [])
+    else:
+        return []
+
 st.title("ClinicalTrials.gov Study Summary Viewer")
 
 search_term = st.text_input("Enter a condition or keyword to search for clinical trials:")
