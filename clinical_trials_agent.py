@@ -39,58 +39,52 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
     if results:
         # Prepare data for export
         data = []
-        for study in results:
-            protocol = study.get("protocolSection", {})
-            id_module = protocol.get("identificationModule", {})
-            status_module = protocol.get("statusModule", {})
-            sponsor_module = protocol.get("sponsorCollaboratorsModule", {})
-            design_module = protocol.get("designModule", {})
-            contact_module = protocol.get("contactsLocationsModule", {})
+        ffor study in results:
+    protocol = study.get("protocolSection", {})
+    id_module = protocol.get("identificationModule", {})
+    status_module = protocol.get("statusModule", {})
+    sponsor_module = protocol.get("sponsorCollaboratorsModule", {})
+    design_module = protocol.get("designModule", {})
+    contact_module = protocol.get("contactsLocationsModule", {})
 
-            nct_id = id_module.get("nctId", "N/A")
-            title = id_module.get("briefTitle", "N/A")
-            study_type = design_module.get("studyType", "N/A")
-            sponsor = sponsor_module.get("leadSponsor", {}).get("name", "N/A")
-            phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
-            status = status_module.get("overallStatus", "N/A")
+    nct_id = id_module.get("nctId", "N/A")
+    title = id_module.get("briefTitle", "N/A")
+    study_type = design_module.get("studyType", "N/A")
+    sponsor = sponsor_module.get("leadSponsor", {}).get("name", "N/A")
+    phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
+    status = status_module.get("overallStatus", "N/A")
 
-            # Improved Date Extraction
-            start_struct = status_module.get("startDateStruct", {})
-            start_estimated = start_struct.get("estimated", "-")
-            start_actual = start_struct.get("actual", "-")
+    # Dates (try structured first, then fallback to posted date text)
+    def get_date(struct):
+        return struct.get("actual", struct.get("estimated", "-")) if struct else "-"
 
-            completion_struct = status_module.get("completionDateStruct", {})
-            completion_estimated = completion_struct.get("estimated", "-")
-            completion_actual = completion_struct.get("actual", "-")
+    start_date = get_date(status_module.get("startDateStruct", {}))
+    completion_date = get_date(status_module.get("completionDateStruct", {}))
+    primary_completion_date = get_date(status_module.get("primaryCompletionDateStruct", {}))
 
-            primary_completion_struct = status_module.get("primaryCompletionDateStruct", {})
-            primary_completion_estimated = primary_completion_struct.get("estimated", "-")
-            primary_completion_actual = primary_completion_struct.get("actual", "-")
+    # Contact Information - fetch all contacts if available
+    contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
+    contact_details = []
+    for contact in contacts:
+        name = contact.get("name", "-")
+        phone = contact.get("phone", "-")
+        email = contact.get("email", "-")
+        contact_details.append(f"Name: {name}, Phone: {phone}, Email: {email}")
+    contact_summary = " | ".join(contact_details) if contact_details else "-"
 
-            # Contact Information
-            central_contact = contact_module.get("centralContactList", {}).get("centralContacts", [{}])[0]
-            contact_name = central_contact.get("name", "-")
-            contact_phone = central_contact.get("phone", "-")
-            contact_email = central_contact.get("email", "-")
-
-            # Append row to data
-            data.append({
-                "NCT ID": nct_id,
-                "Study Type": study_type,
-                "Title": title,
-                "Sponsor": sponsor,
-                "Phase": phase,
-                "Status": status,
-                "Study Start (Estimated)": start_estimated,
-                "Study Start (Actual)": start_actual,
-                "Study Completion (Estimated)": completion_estimated,
-                "Study Completion (Actual)": completion_actual,
-                "Primary Completion (Estimated)": primary_completion_estimated,
-                "Primary Completion (Actual)": primary_completion_actual,
-                "Contact Name": contact_name,
-                "Contact Phone": contact_phone,
-                "Contact Email": contact_email
-            })
+    # Append data
+    data.append({
+        "NCT ID": nct_id,
+        "Study Type": study_type,
+        "Title": title,
+        "Sponsor": sponsor,
+        "Phase": phase,
+        "Status": status,
+        "Study Start": start_date,
+        "Study Completion": completion_date,
+        "Primary Completion": primary_completion_date,
+        "Contacts": contact_summary
+    })
 
         df = pd.DataFrame(data)
 
