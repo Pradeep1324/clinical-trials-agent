@@ -39,7 +39,7 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
     if results:
         # Prepare data for export
         data = []
-        ffor study in results:
+        for study in results:
     protocol = study.get("protocolSection", {})
     id_module = protocol.get("identificationModule", {})
     status_module = protocol.get("statusModule", {})
