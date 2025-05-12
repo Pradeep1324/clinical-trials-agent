@@ -1,29 +1,35 @@
 import streamlit as st
 import requests
+import pandas as pd
+from io import BytesIO
 
-# ✅ ADD THIS FUNCTION AT THE VERY TOP
 API_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-def search_clinical_trials(query, max_results=10):
-    params = {
-        "query.term": query,
-        "pageSize": max_results
-    }
+def search_clinical_trials(query, location=None, max_results=10):
+    params = {"query.term": query, "pageSize": max_results}
+    if location:
+        params["query.location"] = location
     response = requests.get(API_URL, params=params)
     if response.status_code == 200:
         return response.json().get("studies", [])
     else:
         return []
 
-st.title("ClinicalTrials.gov Study Summary Viewer")
+st.title("ClinicalTrials.gov Study Exporter")
 
-search_term = st.text_input("Enter a condition or keyword to search for clinical trials:")
+# ✅ Mandatory Condition/Disease Field
+condition = st.text_input("Condition/Disease (Required):")
 
-if search_term:
+# ✅ Optional Location Field
+location = st.text_input("Location (Optional):")
+
+if st.button("Search and Export to Excel") and condition.strip() != "":
     with st.spinner("Searching ClinicalTrials.gov..."):
-        results = search_clinical_trials(search_term, max_results=5)
+        results = search_clinical_trials(condition, location, max_results=10)
 
     if results:
+        # Prepare data for export
+        data = []
         for study in results:
             protocol = study.get("protocolSection", {})
             id_module = protocol.get("identificationModule", {})
@@ -32,47 +38,50 @@ if search_term:
             design_module = protocol.get("designModule", {})
             contact_module = protocol.get("contactsLocationsModule", {})
 
-            # Extracting required fields
             nct_id = id_module.get("nctId", "N/A")
-            brief_title = id_module.get("briefTitle", "N/A")
+            title = id_module.get("briefTitle", "N/A")
             study_type = design_module.get("studyType", "N/A")
             sponsor = sponsor_module.get("leadSponsor", {}).get("name", "N/A")
             phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
             status = status_module.get("overallStatus", "N/A")
 
-            # Study Dates
-            start_date_struct = status_module.get("startDateStruct", {})
-            start_date_actual = start_date_struct.get("actual", "-")
-            start_date_estimated = start_date_struct.get("estimated", "-")
+            start_date = status_module.get("startDateStruct", {}).get("actual", "-")
+            completion_date = status_module.get("completionDateStruct", {}).get("actual", "-")
+            primary_completion_date = status_module.get("primaryCompletionDateStruct", {}).get("actual", "-")
 
-            completion_date_struct = status_module.get("completionDateStruct", {})
-            completion_date_actual = completion_date_struct.get("actual", "-")
-            completion_date_estimated = completion_date_struct.get("estimated", "-")
-
-            primary_completion_date_struct = status_module.get("primaryCompletionDateStruct", {})
-            primary_completion_date_actual = primary_completion_date_struct.get("actual", "-")
-            primary_completion_date_estimated = primary_completion_date_struct.get("estimated", "-")
-
-            # Contact Information
             central_contact = contact_module.get("centralContactList", {}).get("centralContacts", [{}])[0]
             contact_name = central_contact.get("name", "-")
             contact_phone = central_contact.get("phone", "-")
             contact_email = central_contact.get("email", "-")
 
-            # Display the information
-            st.markdown(f"### {brief_title}")
-            st.write(f"- **NCT ID**: {nct_id}")
-            st.write(f"- **Study Type**: {study_type}")
-            st.write(f"- **Sponsor**: {sponsor}")
-            st.write(f"- **Phase**: {phase}")
-            st.write(f"- **Status**: {status}")
-            st.write(f"- **Study Start Date**: Estimated - {start_date_estimated}, Actual - {start_date_actual}")
-            st.write(f"- **Study Completion Date**: Estimated - {completion_date_estimated}, Actual - {completion_date_actual}")
-            st.write(f"- **Primary Completion Date**: Estimated - {primary_completion_date_estimated}, Actual - {primary_completion_date_actual}")
-            st.write("#### Central Contact")
-            st.write(f"- **Name**: {contact_name}")
-            st.write(f"- **Phone**: {contact_phone}")
-            st.write(f"- **Email**: {contact_email}")
-            st.markdown("---")
+            data.append({
+                "NCT ID": nct_id,
+                "Study Type": study_type,
+                "Title": title,
+                "Sponsor": sponsor,
+                "Phase": phase,
+                "Status": status,
+                "Study Start (Actual)": start_date,
+                "Study Completion (Actual)": completion_date,
+                "Primary Completion (Actual)": primary_completion_date,
+                "Contact Name": contact_name,
+                "Contact Phone": contact_phone,
+                "Contact Email": contact_email
+            })
+
+        df = pd.DataFrame(data)
+
+        # Prepare Excel download
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Clinical Trials")
+        st.download_button(
+            label="Download Results as Excel",
+            data=output.getvalue(),
+            file_name="clinical_trials_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
-        st.write("No studies found.")
+        st.warning("No studies found. Please try a different term.")
+else:
+    st.info("Please enter a condition/disease to begin search.")
