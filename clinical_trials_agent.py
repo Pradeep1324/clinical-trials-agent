@@ -1,3 +1,6 @@
+import streamlit as st
+import requests
+
 st.title("ClinicalTrials.gov Study Summary Viewer")
 
 search_term = st.text_input("Enter a condition or keyword to search for clinical trials:")
