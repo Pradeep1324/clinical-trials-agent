@@ -1,116 +1,134 @@
-import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
-import re
-from io import BytesIO
+from bs4 import BeautifulSoup
+import time
 
-st.title("ClinicalTrials.gov Date Extractor")
-st.write("Enter a condition/disease to extract Start, Primary Completion, and Completion Dates (Estimated & Actual).")
-
-condition = st.text_input("Condition/Disease (Required):")
-export_option = st.radio("Select Export Option:", ("Sample (10 results)", "Get Complete Data (All available)"))
-max_results = 10 if export_option == "Sample (10 results)" else 1000
-
-SEARCH_API_URL = "https://clinicaltrials.gov/api/v2/studies"
-
-def search_nct_ids(condition_term, max_results=10):
-    params = {"query.term": condition_term, "pageSize": max_results}
-    response = requests.get(SEARCH_API_URL, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        return [study.get("protocolSection", {}).get("identificationModule", {}).get("nctId", "")
-                for study in data.get("studies", [])]
-    return []
-
-def extract_estimated_dates_from_first_version(nct_id):
-    url = f"https://clinicaltrials.gov/ct2/history/{nct_id}?V_1"
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
-    except Exception:
-        return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
-
-    text = BeautifulSoup(resp.text, "lxml").get_text(separator=" ")
-
-    def extract(label):
-        # Match: "Primary Completion Date: January 2023 [Anticipated]"
-        pattern = rf"{label}\s*Date\s*:\s*([A-Za-z]+\s+\d{{4}}|\w+\s+\d{{1,2}},\s+\d{{4}})"
-        match = re.search(pattern, text, re.IGNORECASE)
-        return match.group(1).strip() if match else "N/A"
-
-    return {
-        "start": extract("Study Start"),
-        "primary": extract("Primary Completion"),
-        "completion": extract("Study Completion") or extract("Completion")
+def get_nct_ids(condition, max_studies=20):
+    print("🔍 Fetching NCT IDs...")
+    url = "https://clinicaltrials.gov/api/query/study_fields"
+    params = {
+        "expr": condition,
+        "fields": "NCTId",
+        "min_rnk": 1,
+        "max_rnk": max_studies,
+        "fmt": "json"
     }
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    return [s["NCTId"][0] for s in response.json()["StudyFieldsResponse"]["StudyFields"]]
 
-def extract_actual_dates_from_api(nct_id):
-    url = f"https://clinicaltrials.gov/api/v2/studies/{nct_id}?fields=study.protocolSection.statusModule"
+def fetch_dates_from_xml(nct_id):
+    base_url = f"https://clinicaltrials.gov/api/query/full_studies"
+    params = {"expr": nct_id, "fmt": "json"}
+    response = requests.get(base_url, params=params)
+    response.raise_for_status()
+    study_data = response.json()
+    actual, estimated = {}, {}
+
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
-    except Exception:
-        return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
+        study = study_data['FullStudiesResponse']['FullStudies'][0]['Study']
+        protocol = study.get("ProtocolSection", {})
+        status = protocol.get("StatusModule", {})
+
+        def extract_dates(source, target):
+            for date_field in ["StudyStartDate", "PrimaryCompletionDate", "CompletionDate"]:
+                val = source.get(date_field)
+                if val:
+                    text = val.get("#text", "-")
+                    type_ = val.get("@Type", "Estimated")
+                    if type_.lower() == "actual":
+                        target[date_field] = text
+                    else:
+                        target[f"{date_field}_Estimated"] = text
+
+        extract_dates(status, actual)
+
+    except Exception as e:
+        print(f"⚠️ Error parsing XML for {nct_id}: {e}")
+
+    return {**actual, **estimated}
+
+def fetch_estimated_from_html(nct_id):
+    print(f"🌐 Scraping estimated dates for {nct_id}...")
+    url = f"https://clinicaltrials.gov/study/{nct_id}/history"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    estimated = {}
 
     try:
-        data = resp.json()
-        study = data.get("study", data.get("studies", [{}])[0])
-        status = study.get("protocolSection", {}).get("statusModule", {})
-    except Exception:
-        return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
+        rows = soup.select("table tbody tr")
+        for row in rows:
+            cells = [c.get_text(strip=True) for c in row.find_all("td")]
+            if len(cells) >= 4 and "First posted" in cells[2]:
+                break  # Stop early
+            if len(cells) >= 4 and cells[3]:
+                for key in ["Study Start Date", "Primary Completion Date", "Study Completion Date"]:
+                    if key in cells[2] and "Estimated" in cells[3]:
+                        estimated_key = key.replace(" ", "") + "_Estimated"
+                        estimated[estimated_key] = cells[3].replace("Estimated", "").strip()
+    except Exception as e:
+        print(f"⚠️ Error scraping estimated dates for {nct_id}: {e}")
 
-    def get_actual(d):
-        if d and d.get("type", "").lower() == "actual":
-            return d.get("date", "N/A")
-        return "N/A"
+    return estimated
 
-    return {
-        "start": get_actual(status.get("startDateStruct")),
-        "primary": get_actual(status.get("primaryCompletionDateStruct")),
-        "completion": get_actual(status.get("completionDateStruct"))
-    }
+def fetch_all_fields(nct_id):
+    print(f"📄 Processing: {nct_id}")
+    url = f"https://clinicaltrials.gov/api/query/full_studies?expr={nct_id}&fmt=json"
+    response = requests.get(url)
+    study = response.json()['FullStudiesResponse']['FullStudies'][0]['Study']
 
-if st.button("Search and Export") and condition.strip():
-    with st.spinner("Processing..."):
-        nct_ids = search_nct_ids(condition.strip(), max_results=max_results)
+    try:
+        protocol = study['ProtocolSection']
+        sponsor = protocol['IdentificationModule'].get("OrganizationName", "-")
+        title = protocol['IdentificationModule'].get("BriefTitle", "-")
+        study_type = protocol['DesignModule'].get("StudyType", "-")
+        phase = protocol['DesignModule'].get("Phase", "-")
+        status = protocol['StatusModule'].get("OverallStatus", "-")
 
-    if not nct_ids:
-        st.warning("No studies found.")
-    else:
-        results = []
-        for nct_id in nct_ids:
-            est = extract_estimated_dates_from_first_version(nct_id)
-            act = extract_actual_dates_from_api(nct_id)
+        contact_info = protocol.get("ContactsLocationsModule", {}).get("CentralContactList", {}).get("CentralContact", {})
+        contact_name = contact_info.get("Name", "-")
+        contact_phone = contact_info.get("Phone", "-")
+        contact_email = contact_info.get("Email", "-")
 
-            # 🔍 Debug output
-            st.markdown(f"**{nct_id}**")
-            st.json({"Estimated": est, "Actual": act})
+        actual_dates = fetch_dates_from_xml(nct_id)
+        estimated_dates = fetch_estimated_from_html(nct_id)
 
-            results.append({
-                "NCT ID": nct_id,
-                "Study Start (Estimated)": est["start"],
-                "Study Start (Actual)": act["start"],
-                "Primary Completion (Estimated)": est["primary"],
-                "Primary Completion (Actual)": act["primary"],
-                "Study Completion (Estimated)": est["completion"],
-                "Study Completion (Actual)": act["completion"]
-            })
+        return {
+            "NCT ID": nct_id,
+            "Brief Title": title,
+            "Sponsor": sponsor,
+            "Study Type": study_type,
+            "Phase": phase,
+            "Status": status,
+            "Study Start Date Estimated": estimated_dates.get("StudyStartDate_Estimated", "-"),
+            "Study Start Date Actual": actual_dates.get("StudyStartDate", "-"),
+            "Primary Completion Date Estimated": estimated_dates.get("PrimaryCompletionDate_Estimated", "-"),
+            "Primary Completion Date Actual": actual_dates.get("PrimaryCompletionDate", "-"),
+            "Study Completion Date Estimated": estimated_dates.get("StudyCompletionDate_Estimated", "-"),
+            "Study Completion Date Actual": actual_dates.get("CompletionDate", "-"),
+            "Contact Name": contact_name,
+            "Contact Phone": contact_phone,
+            "Contact Email": contact_email
+        }
 
-        df = pd.DataFrame(results)
-        st.success(f"{len(results)} studies processed.")
-        st.dataframe(df)
+    except Exception as e:
+        print(f"⚠️ Error fetching details for {nct_id}: {e}")
+        return {}
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False)
-        st.download_button(
-            label="📥 Download Excel",
-            data=output.getvalue(),
-            file_name="clinical_trials_dates.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-else:
-    st.info("Please enter a condition or disease to begin.")
+def fetch_trials_by_condition(condition):
+    nct_ids = get_nct_ids(condition)
+    all_trials = []
+    for nct in nct_ids:
+        trial = fetch_all_fields(nct)
+        if trial:
+            all_trials.append(trial)
+        time.sleep(0.5)
+    return pd.DataFrame(all_trials)
+
+if __name__ == "__main__":
+    print("🚀 Script started")
+    condition = input("Enter condition/disease name: ")
+    df = fetch_trials_by_condition(condition)
+    filename = f"clinical_trials_{condition}.xlsx"
+    df.to_excel(filename, index=False)
+    print(f"✅ Data saved to {filename}")
