@@ -17,18 +17,19 @@ def search_clinical_trials(query, location=None, max_results=10):
 
 st.title("ClinicalTrials.gov Study Exporter")
 
-# Mandatory field
+# Mandatory input
 condition = st.text_input("Condition/Disease (Required):")
 
-# Optional field
+# Optional location input
 location = st.text_input("Location (Optional):")
 
-# Export choice
+# Export option
 export_option = st.radio(
     "Select Export Option:",
     ("Sample (10 results)", "Get Complete Data (All available)")
 )
 
+# Set result limit
 max_results = 10 if export_option == "Sample (10 results)" else 1000
 
 if st.button("Search and Export to Excel") and condition.strip() != "":
@@ -36,7 +37,20 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
         results = search_clinical_trials(condition, location, max_results=max_results)
 
     if results:
+        st.subheader("📋 Sample Study Record (Debug)")
+        st.json(results[0])  # View one record structure
+
         data = []
+
+        def extract_dates(struct):
+            if not struct:
+                return "-", "-"
+            date = struct.get("date", "-")
+            date_type = struct.get("type", "").upper()
+            actual = date if date_type == "ACTUAL" else "-"
+            estimated = date if date_type == "ESTIMATED" else "-"
+            return actual, estimated
+
         for study in results:
             protocol = study.get("protocolSection", {})
             id_module = protocol.get("identificationModule", {})
@@ -52,15 +66,11 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
             phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
             status = status_module.get("overallStatus", "N/A")
 
-            # Extract actual & estimated dates individually
-            def extract_dates(struct):
-                return struct.get("actual", "-"), struct.get("estimated", "-")
-
             start_actual, start_estimated = extract_dates(status_module.get("startDateStruct", {}))
             primary_actual, primary_estimated = extract_dates(status_module.get("primaryCompletionDateStruct", {}))
             completion_actual, completion_estimated = extract_dates(status_module.get("completionDateStruct", {}))
 
-            # Central Contacts
+            # Contacts
             contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
             contact_details = []
             for contact in contacts:
@@ -70,7 +80,7 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
                 contact_details.append(f"{name}, {phone}, {email}")
             contact_summary = " | ".join(contact_details) if contact_details else "-"
 
-            # Facility Locations
+            # Facilities
             facilities = contact_module.get("facilityList", {}).get("facilities", [])
             facility_details = []
             for facility in facilities:
@@ -98,7 +108,7 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
 
         df = pd.DataFrame(data)
 
-        # Excel export
+        # Excel download
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Clinical Trials")
