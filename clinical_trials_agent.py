@@ -6,25 +6,16 @@ import re
 from io import BytesIO
 
 st.title("ClinicalTrials.gov Date Extractor")
-st.write("Enter a condition or disease to extract study start, primary completion, and study completion dates (Estimated vs Actual).")
+st.write("Enter a condition/disease to extract Start, Primary Completion, and Completion Dates (Estimated & Actual).")
 
 condition = st.text_input("Condition/Disease (Required):")
-
-export_option = st.radio(
-    "Select Export Option:",
-    ("Sample (10 results)", "Get Complete Data (All available)")
-)
-
+export_option = st.radio("Select Export Option:", ("Sample (10 results)", "Get Complete Data (All available)"))
 max_results = 10 if export_option == "Sample (10 results)" else 1000
 
-# API endpoint for searching studies
 SEARCH_API_URL = "https://clinicaltrials.gov/api/v2/studies"
 
 def search_nct_ids(condition_term, max_results=10):
-    params = {
-        "query.term": condition_term,
-        "pageSize": max_results
-    }
+    params = {"query.term": condition_term, "pageSize": max_results}
     response = requests.get(SEARCH_API_URL, params=params)
     if response.status_code == 200:
         data = response.json()
@@ -41,12 +32,12 @@ def extract_estimated_dates_from_first_version(nct_id):
     except Exception:
         return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    full_text = soup.get_text(separator=" ").strip()
+    text = BeautifulSoup(resp.text, "lxml").get_text(separator=" ")
 
     def extract(label):
-        pattern = rf"{label} Date\s*:?\s*([A-Za-z]+\s+\d{{4}}|\w+\s+\d{{1,2}},\s+\d{{4}})"
-        match = re.search(pattern, full_text, re.IGNORECASE)
+        # Match: "Primary Completion Date: January 2023 [Anticipated]"
+        pattern = rf"{label}\s*Date\s*:\s*([A-Za-z]+\s+\d{{4}}|\w+\s+\d{{1,2}},\s+\d{{4}})"
+        match = re.search(pattern, text, re.IGNORECASE)
         return match.group(1).strip() if match else "N/A"
 
     return {
@@ -64,9 +55,12 @@ def extract_actual_dates_from_api(nct_id):
     except Exception:
         return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
 
-    data = resp.json()
-    study = data.get("study", {})
-    status = study.get("protocolSection", {}).get("statusModule", {}) if study else {}
+    try:
+        data = resp.json()
+        study = data.get("study", data.get("studies", [{}])[0])
+        status = study.get("protocolSection", {}).get("statusModule", {})
+    except Exception:
+        return {"start": "N/A", "primary": "N/A", "completion": "N/A"}
 
     def get_actual(d):
         if d and d.get("type", "").lower() == "actual":
@@ -80,7 +74,7 @@ def extract_actual_dates_from_api(nct_id):
     }
 
 if st.button("Search and Export") and condition.strip():
-    with st.spinner("Searching studies and extracting dates..."):
+    with st.spinner("Processing..."):
         nct_ids = search_nct_ids(condition.strip(), max_results=max_results)
 
     if not nct_ids:
@@ -90,6 +84,10 @@ if st.button("Search and Export") and condition.strip():
         for nct_id in nct_ids:
             est = extract_estimated_dates_from_first_version(nct_id)
             act = extract_actual_dates_from_api(nct_id)
+
+            # 🔍 Debug output
+            st.markdown(f"**{nct_id}**")
+            st.json({"Estimated": est, "Actual": act})
 
             results.append({
                 "NCT ID": nct_id,
@@ -109,7 +107,7 @@ if st.button("Search and Export") and condition.strip():
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
         st.download_button(
-            label="📥 Download as Excel",
+            label="📥 Download Excel",
             data=output.getvalue(),
             file_name="clinical_trials_dates.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
