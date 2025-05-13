@@ -1,9 +1,14 @@
 import streamlit as st
 import requests
+from bs4 import BeautifulSoup
 import pandas as pd
 from io import BytesIO
 
 API_URL = "https://clinicaltrials.gov/api/v2/studies"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; clinical-trial-scraper/1.0)"
+}
 
 def search_clinical_trials(query, location=None, max_results=10):
     params = {"query.term": query, "pageSize": max_results}
@@ -15,21 +20,43 @@ def search_clinical_trials(query, location=None, max_results=10):
     else:
         return []
 
-st.title("ClinicalTrials.gov Study Exporter")
+def extract_dates_from_version(nct_id, version="1"):
+    url = f"https://clinicaltrials.gov/ct2/history/{nct_id}?V_{version}"
+    response = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(response.text, "lxml")
 
-# Mandatory input
+    table = soup.find("table", {"id": "study-info-table"})
+    dates = {"start": "-", "primary": "-", "completion": "-"}
+
+    if table:
+        rows = table.find_all("tr")
+        for row in rows:
+            th = row.find("th")
+            td = row.find("td")
+            if not th or not td:
+                continue
+            label = th.get_text(strip=True)
+            value = td.get_text(strip=True)
+
+            if "Study Start" in label and dates["start"] == "-":
+                dates["start"] = value
+            elif "Primary Completion" in label and dates["primary"] == "-":
+                dates["primary"] = value
+            elif "Study Completion" in label and dates["completion"] == "-":
+                dates["completion"] = value
+
+    return dates
+
+st.title("ClinicalTrials.gov Study Exporter (with Historic Dates)")
+
 condition = st.text_input("Condition/Disease (Required):")
-
-# Optional location input
 location = st.text_input("Location (Optional):")
 
-# Export option
 export_option = st.radio(
     "Select Export Option:",
     ("Sample (10 results)", "Get Complete Data (All available)")
 )
 
-# Set result limit
 max_results = 10 if export_option == "Sample (10 results)" else 1000
 
 if st.button("Search and Export to Excel") and condition.strip() != "":
@@ -37,19 +64,7 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
         results = search_clinical_trials(condition, location, max_results=max_results)
 
     if results:
-        st.subheader("📋 Sample Study Record (Debug)")
-        st.json(results[0])  # View one record structure
-
         data = []
-
-        def extract_dates(struct):
-            if not struct:
-                return "-", "-"
-            date = struct.get("date", "-")
-            date_type = struct.get("type", "").upper()
-            actual = date if date_type == "ACTUAL" else "-"
-            estimated = date if date_type == "ESTIMATED" else "-"
-            return actual, estimated
 
         for study in results:
             protocol = study.get("protocolSection", {})
@@ -66,11 +81,11 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
             phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
             status = status_module.get("overallStatus", "N/A")
 
-            start_actual, start_estimated = extract_dates(status_module.get("startDateStruct", {}))
-            primary_actual, primary_estimated = extract_dates(status_module.get("primaryCompletionDateStruct", {}))
-            completion_actual, completion_estimated = extract_dates(status_module.get("completionDateStruct", {}))
+            # Get Estimated from first version, Actual from latest
+            estimated_dates = extract_dates_from_version(nct_id, version="1")
+            actual_dates = extract_dates_from_version(nct_id, version="latest")
 
-            # Contacts
+            # Central Contacts
             contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
             contact_details = []
             for contact in contacts:
@@ -80,7 +95,7 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
                 contact_details.append(f"{name}, {phone}, {email}")
             contact_summary = " | ".join(contact_details) if contact_details else "-"
 
-            # Facilities
+            # Locations
             facilities = contact_module.get("facilityList", {}).get("facilities", [])
             facility_details = []
             for facility in facilities:
@@ -96,19 +111,18 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
                 "Sponsor": sponsor,
                 "Phase": phase,
                 "Status": status,
-                "Study Start (Actual)": start_actual,
-                "Study Start (Estimated)": start_estimated,
-                "Primary Completion (Actual)": primary_actual,
-                "Primary Completion (Estimated)": primary_estimated,
-                "Study Completion (Actual)": completion_actual,
-                "Study Completion (Estimated)": completion_estimated,
+                "Study Start (Estimated)": estimated_dates["start"],
+                "Study Start (Actual)": actual_dates["start"],
+                "Primary Completion (Estimated)": estimated_dates["primary"],
+                "Primary Completion (Actual)": actual_dates["primary"],
+                "Study Completion (Estimated)": estimated_dates["completion"],
+                "Study Completion (Actual)": actual_dates["completion"],
                 "Contacts": contact_summary,
                 "Locations": location_summary
             })
 
         df = pd.DataFrame(data)
 
-        # Excel download
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Clinical Trials")
