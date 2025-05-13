@@ -1,11 +1,11 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
 from io import BytesIO
+from xml.etree import ElementTree as ET
 
 API_URL = "https://clinicaltrials.gov/api/v2/studies"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+XML_BASE_URL = "https://clinicaltrials.gov/ct2/show"
 
 def search_clinical_trials(query, location=None, max_results=10):
     params = {"query.term": query, "pageSize": max_results}
@@ -16,18 +16,11 @@ def search_clinical_trials(query, location=None, max_results=10):
         return response.json().get("studies", [])
     return []
 
-def get_dates_from_study_page(nct_id):
-    url = f"https://clinicaltrials.gov/study/{nct_id}"
-    response = requests.get(url, headers=HEADERS)
-    soup = BeautifulSoup(response.text, "lxml")
-
-    fields = {
-        "Study Start": ("Study Start (Estimated)", "Study Start (Actual)"),
-        "Primary Completion": ("Primary Completion (Estimated)", "Primary Completion (Actual)"),
-        "Study Completion": ("Study Completion (Estimated)", "Study Completion (Actual)")
-    }
-
+def extract_dates_and_phase_from_xml(nct_id):
+    url = f"{XML_BASE_URL}/{nct_id}?displayxml=true"
+    response = requests.get(url)
     results = {
+        "Phase": "-",
         "Study Start (Estimated)": "-",
         "Study Start (Actual)": "-",
         "Primary Completion (Estimated)": "-",
@@ -36,26 +29,42 @@ def get_dates_from_study_page(nct_id):
         "Study Completion (Actual)": "-"
     }
 
-    rows = soup.find_all("dt")
-    for dt in rows:
-        label = dt.text.strip()
-        dd = dt.find_next_sibling("dd")
-        if not dd:
-            continue
-        text = dd.text.strip()
-        for key, (est_key, act_key) in fields.items():
-            if label.startswith(key):
-                if "actual" in text.lower():
-                    results[act_key] = text
-                elif "estimated" in text.lower():
-                    results[est_key] = text
+    if response.status_code != 200:
+        return results
+
+    try:
+        root = ET.fromstring(response.content)
+
+        # Phase
+        phase_elem = root.find("phase")
+        if phase_elem is not None:
+            results["Phase"] = phase_elem.text.strip()
+
+        # Date logic
+        def extract_date(tag, label):
+            elems = root.findall(tag)
+            for el in elems:
+                type_ = el.attrib.get("type", "").lower()
+                value = el.text.strip()
+                if "actual" in type_:
+                    results[f"{label} (Actual)"] = value
+                elif "estimated" in type_:
+                    results[f"{label} (Estimated)"] = value
                 else:
-                    # if no label, treat as estimated
-                    results[est_key] = text
+                    # fallback if no type
+                    results[f"{label} (Estimated)"] = value
+
+        extract_date("start_date", "Study Start")
+        extract_date("primary_completion_date", "Primary Completion")
+        extract_date("completion_date", "Study Completion")
+
+    except Exception as e:
+        print(f"XML parsing error for {nct_id}: {e}")
+
     return results
 
 # --- Streamlit UI ---
-st.title("ClinicalTrials.gov Study Exporter (Stable Date Scraper)")
+st.title("ClinicalTrials.gov Exporter (Reliable XML Version)")
 
 condition = st.text_input("Condition/Disease (Required):")
 location = st.text_input("Location (Optional):")
@@ -68,15 +77,15 @@ export_option = st.radio(
 max_results = 10 if export_option == "Sample (10 results)" else 1000
 
 if st.button("Search and Export to Excel") and condition.strip():
-    with st.spinner("Fetching clinical trial data..."):
+    with st.spinner("Fetching data..."):
         results = search_clinical_trials(condition, location, max_results)
 
     if results:
         data = []
+
         for study in results:
             protocol = study.get("protocolSection", {})
             id_module = protocol.get("identificationModule", {})
-            status_module = protocol.get("statusModule", {})
             sponsor_module = protocol.get("sponsorCollaboratorsModule", {})
             design_module = protocol.get("designModule", {})
             contact_module = protocol.get("contactsLocationsModule", {})
@@ -85,13 +94,12 @@ if st.button("Search and Export to Excel") and condition.strip():
             title = id_module.get("briefTitle", "N/A")
             study_type = design_module.get("studyType", "N/A")
             sponsor = sponsor_module.get("leadSponsor", {}).get("name", "N/A")
-            phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
-            status = status_module.get("overallStatus", "N/A")
+            status = protocol.get("statusModule", {}).get("overallStatus", "N/A")
 
-            # Scrape study detail page for dates
-            dates = get_dates_from_study_page(nct_id)
+            # Extract date & phase from XML
+            xml_data = extract_dates_and_phase_from_xml(nct_id)
 
-            # Contacts
+            # Contact Info
             contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
             contact_details = []
             for contact in contacts:
@@ -103,26 +111,26 @@ if st.button("Search and Export to Excel") and condition.strip():
 
             # Locations
             facilities = contact_module.get("facilityList", {}).get("facilities", [])
-            location_details = []
+            locations = []
             for facility in facilities:
                 name = facility.get("name", "-")
                 country = facility.get("location", {}).get("country", "-")
-                location_details.append(f"{name} ({country})")
-            location_summary = " | ".join(location_details) if location_details else "-"
+                locations.append(f"{name} ({country})")
+            location_summary = " | ".join(locations) if locations else "-"
 
             data.append({
                 "NCT ID": nct_id,
                 "Study Type": study_type,
                 "Title": title,
                 "Sponsor": sponsor,
-                "Phase": phase,
+                "Phase": xml_data["Phase"],
                 "Status": status,
-                "Study Start (Estimated)": dates["Study Start (Estimated)"],
-                "Study Start (Actual)": dates["Study Start (Actual)"],
-                "Primary Completion (Estimated)": dates["Primary Completion (Estimated)"],
-                "Primary Completion (Actual)": dates["Primary Completion (Actual)"],
-                "Study Completion (Estimated)": dates["Study Completion (Estimated)"],
-                "Study Completion (Actual)": dates["Study Completion (Actual)"],
+                "Study Start (Estimated)": xml_data["Study Start (Estimated)"],
+                "Study Start (Actual)": xml_data["Study Start (Actual)"],
+                "Primary Completion (Estimated)": xml_data["Primary Completion (Estimated)"],
+                "Primary Completion (Actual)": xml_data["Primary Completion (Actual)"],
+                "Study Completion (Estimated)": xml_data["Study Completion (Estimated)"],
+                "Study Completion (Actual)": xml_data["Study Completion (Actual)"],
                 "Contacts": contact_summary,
                 "Locations": location_summary
             })
@@ -139,6 +147,6 @@ if st.button("Search and Export to Excel") and condition.strip():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning("No results found.")
+        st.warning("No studies found.")
 else:
     st.info("Please enter a condition/disease to begin search.")
