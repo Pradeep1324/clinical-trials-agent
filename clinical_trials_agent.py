@@ -17,19 +17,18 @@ def search_clinical_trials(query, location=None, max_results=10):
 
 st.title("ClinicalTrials.gov Study Exporter")
 
-# Mandatory Condition/Disease Field
+# Mandatory field
 condition = st.text_input("Condition/Disease (Required):")
 
-# Optional Location Field
+# Optional field
 location = st.text_input("Location (Optional):")
 
-# Choice to limit or get all results
+# Export choice
 export_option = st.radio(
     "Select Export Option:",
     ("Sample (10 results)", "Get Complete Data (All available)")
 )
 
-# Map option to number of results
 max_results = 10 if export_option == "Sample (10 results)" else 1000
 
 if st.button("Search and Export to Excel") and condition.strip() != "":
@@ -37,7 +36,6 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
         results = search_clinical_trials(condition, location, max_results=max_results)
 
     if results:
-        # Prepare data for export
         data = []
         for study in results:
             protocol = study.get("protocolSection", {})
@@ -54,25 +52,33 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
             phase = design_module.get("phaseList", {}).get("phases", ["N/A"])[0]
             status = status_module.get("overallStatus", "N/A")
 
-            # Dates (try structured first, then fallback to posted date text)
-            def get_date(struct):
-                return struct.get("actual", struct.get("estimated", "-")) if struct else "-"
+            # Extract actual & estimated dates individually
+            def extract_dates(struct):
+                return struct.get("actual", "-"), struct.get("estimated", "-")
 
-            start_date = get_date(status_module.get("startDateStruct", {}))
-            completion_date = get_date(status_module.get("completionDateStruct", {}))
-            primary_completion_date = get_date(status_module.get("primaryCompletionDateStruct", {}))
+            start_actual, start_estimated = extract_dates(status_module.get("startDateStruct", {}))
+            primary_actual, primary_estimated = extract_dates(status_module.get("primaryCompletionDateStruct", {}))
+            completion_actual, completion_estimated = extract_dates(status_module.get("completionDateStruct", {}))
 
-            # Contact Information - fetch all contacts if available
+            # Central Contacts
             contacts = contact_module.get("centralContactList", {}).get("centralContacts", [])
             contact_details = []
             for contact in contacts:
                 name = contact.get("name", "-")
                 phone = contact.get("phone", "-")
                 email = contact.get("email", "-")
-                contact_details.append(f"Name: {name}, Phone: {phone}, Email: {email}")
+                contact_details.append(f"{name}, {phone}, {email}")
             contact_summary = " | ".join(contact_details) if contact_details else "-"
 
-            # Append data
+            # Facility Locations
+            facilities = contact_module.get("facilityList", {}).get("facilities", [])
+            facility_details = []
+            for facility in facilities:
+                name = facility.get("name", "-")
+                country = facility.get("location", {}).get("country", "-")
+                facility_details.append(f"{name} ({country})")
+            location_summary = " | ".join(facility_details) if facility_details else "-"
+
             data.append({
                 "NCT ID": nct_id,
                 "Study Type": study_type,
@@ -80,15 +86,19 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
                 "Sponsor": sponsor,
                 "Phase": phase,
                 "Status": status,
-                "Study Start": start_date,
-                "Study Completion": completion_date,
-                "Primary Completion": primary_completion_date,
-                "Contacts": contact_summary
+                "Study Start (Actual)": start_actual,
+                "Study Start (Estimated)": start_estimated,
+                "Primary Completion (Actual)": primary_actual,
+                "Primary Completion (Estimated)": primary_estimated,
+                "Study Completion (Actual)": completion_actual,
+                "Study Completion (Estimated)": completion_estimated,
+                "Contacts": contact_summary,
+                "Locations": location_summary
             })
 
         df = pd.DataFrame(data)
 
-        # Prepare Excel file for download
+        # Excel export
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Clinical Trials")
@@ -99,6 +109,6 @@ if st.button("Search and Export to Excel") and condition.strip() != "":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning("No studies found. Please try a different term.")
+        st.warning("No studies found.")
 else:
     st.info("Please enter a condition/disease to begin search.")
